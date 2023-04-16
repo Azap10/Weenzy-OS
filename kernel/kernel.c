@@ -131,10 +131,10 @@ void process_setup(pid_t pid, int program_number) {
     x86_64_pagetable* pagetable_array[5];
     for (int i = 0; i < 5; i++) {
         pagetable_array[i] = (x86_64_pagetable*) find_free_page(pid); 
-        if (pagetable_array[i] == NULL) {
+        if (pagetable_array[i] == (x86_64_pagetable*) -1) {
             return;
-            // TODO: error handling for running out of space for PTs
         }
+        memset((void*) pagetable_array[i], 0, PAGESIZE); 
     }
     pagetable_array[0]->entry[0] = 
         (x86_64_pageentry_t) pagetable_array[1] | PTE_W | PTE_U | PTE_P;
@@ -149,7 +149,7 @@ void process_setup(pid_t pid, int program_number) {
 
     // map pages existing in kernel pagetable to process pagetable.
     vamapping vam;
-    for (int addr = 0; addr < MEMSIZE_VIRTUAL; addr += PAGESIZE) {
+    for (int addr = 0; addr < PROC_START_ADDR; addr += PAGESIZE) {
         vam = virtual_memory_lookup(kernel_pagetable, addr);
         if (vam.pn >= 0) {
             virtual_memory_map(pagetable_array[0], addr, vam.pa, PAGESIZE, vam.perm);
@@ -162,10 +162,12 @@ void process_setup(pid_t pid, int program_number) {
     int r = program_load(&processes[pid], program_number, NULL);
     assert(r >= 0);
 
-    processes[pid].p_registers.reg_rsp = PROC_START_ADDR + PROC_SIZE * pid;
+    processes[pid].p_registers.reg_rsp = MEMSIZE_VIRTUAL; //PROC_START_ADDR + PROC_SIZE * pid;
     uintptr_t stack_page = processes[pid].p_registers.reg_rsp - PAGESIZE;
-    assign_physical_page(stack_page, pid);
-    virtual_memory_map(processes[pid].p_pagetable, stack_page, stack_page,
+	current->p_registers.reg_rdi = stack_page;
+
+	uintptr_t p_stack_page = find_free_page(pid);
+    virtual_memory_map(processes[pid].p_pagetable, stack_page, p_stack_page,
                        PAGESIZE, PTE_P | PTE_W | PTE_U);
     processes[pid].p_state = P_RUNNABLE;
 }
@@ -289,27 +291,37 @@ void exception(x86_64_registers* reg) {
     case INT_SYS_PAGE_ALLOC: {
         uintptr_t addr = current->p_registers.reg_rdi;
         if (addr < PROC_START_ADDR && (addr < CONSOLE_ADDR || addr > CONSOLE_ADDR + PAGESIZE)) {
-            log_printf("allocated address is in kernel space");
+            log_printf("allocated address is in kernel space\n");
             current->p_registers.reg_rax = -1;
             break;
         }
         else if (addr % PAGESIZE != 0) {
-            log_printf("allocated address is not page-aligned");
+            log_printf("allocated address is not page-aligned\n");
             current->p_registers.reg_rax = -1;
             break;
         }
-        else if (addr > MEMSIZE_PHYSICAL) {
-            log_printf("allocated address is out of range");
+        else if (addr > MEMSIZE_VIRTUAL) {
+            log_printf("allocated address is out of range\n");
             current->p_registers.reg_rax = -1;
             break;
         }
         else {
-            int r = assign_physical_page(addr, current->p_pid);
-            if (r >= 0) {
-                virtual_memory_map(current->p_pagetable, addr, addr,
-                                   PAGESIZE, PTE_P | PTE_W | PTE_U);
+            // obtain new physical page
+			// log_printf("%d\n", current->p_pid);
+            uintptr_t p_addr = find_free_page(current->p_pid);
+            if (p_addr == (uintptr_t) -1) {
+                log_printf("no valid physical page found to allocate: %d\n", current->p_registers.reg_rax);
+                return;       
             }
-            current->p_registers.reg_rax = r;
+            virtual_memory_map(current->p_pagetable, addr, p_addr,
+                               PAGESIZE, PTE_P | PTE_W | PTE_U);
+            current->p_registers.reg_rax = 0;
+            // int r = assign_physical_page(addr, current->p_pid);
+            // if (r >= 0) {
+            //     virtual_memory_map(current->p_pagetable, addr, addr,
+            //                        PAGESIZE, PTE_P | PTE_W | PTE_U);
+            // }
+            // current->p_registers.reg_rax = r;
             break;
         }
     }
@@ -645,16 +657,16 @@ void memshow_virtual_animate(void) {
 
 // find next available page to construct page table
 uintptr_t find_free_page(pid_t pid) {
-    for (uintptr_t page_addr = 0; page_addr < PROC_START_ADDR; page_addr += PAGESIZE) {
+    for (uintptr_t page_addr = 0; page_addr < MEMSIZE_PHYSICAL; page_addr += PAGESIZE) {
         if (pageinfo[PAGENUMBER(page_addr)].owner == PO_FREE) {
             // pageinfo[i].owner = pid;
             if (assign_physical_page(page_addr, pid) != 0) { 
                 current->p_registers.reg_rax = -1;
-                return (uintptr_t) NULL;
+                return (uintptr_t) -1;
             }
-            memset((void*) page_addr, 0, sizeof(x86_64_pagetable));
             return page_addr;
         }
     }
-    return (uintptr_t) NULL;
+	current->p_registers.reg_rax = -1;
+    return (uintptr_t) -1;
 }
