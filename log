@@ -14,6 +14,8 @@ Date        Time Spent      Description
                             started to work on fork.
 04/17       2.5 hours       Completed fork, fixed exception 13. Started to work on
                             task 6, stuck with kernel page fault.
-04/18       1 hour          Completed task 6.
+04/18       4 hour          Completed task 6. Made progress on task 7.
+
+04/19       0.5 hours       Passed all public tests.
 ----------------------------------------------------------------------------
-    TOTAL:  17.5 hours
+    TOTAL:  21 hours

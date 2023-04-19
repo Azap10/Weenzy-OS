@@ -77,6 +77,9 @@ x86_64_pagetable* generate_new_pagetable(pid_t pid);
 uintptr_t find_free_page(pid_t pid);
 uintptr_t find_unassigned_page();
 pid_t find_free_process();
+void free_process(pid_t pid);
+int num_free_pages();
+int num_process_pages(pid_t pid);
 
 
 // kernel(command)
@@ -148,6 +151,11 @@ void process_setup(pid_t pid, int program_number) {
 	current->p_registers.reg_rdi = stack_page;
 
 	uintptr_t p_stack_page = find_free_page(pid);
+	if (p_stack_page == (uintptr_t) -1) {
+		free_process(pid);
+		processes[pid].p_registers.reg_rax = -1;
+		return;
+	}
     virtual_memory_map(processes[pid].p_pagetable, stack_page, p_stack_page,
                        PAGESIZE, PTE_P | PTE_W | PTE_U);
     processes[pid].p_state = P_RUNNABLE;
@@ -158,8 +166,15 @@ x86_64_pagetable* generate_new_pagetable(pid_t pid) {
     for (int i = 0; i < 5; i++) {
         pagetable_array[i] = (x86_64_pagetable*) find_free_page(pid); 
         if (pagetable_array[i] == (x86_64_pagetable*) -1) {
+            // log_printf("COULD NOT FIND ALL PAGES FOR PROCESS %d\n", pid);
+			for (int j = 0; j < i + 1; j++) {
+                // log_printf("Set page %d to free\n", PAGENUMBER(pagetable_array[i]));
+				pageinfo[PAGENUMBER(pagetable_array[i])].owner = PO_FREE;
+				pageinfo[PAGENUMBER(pagetable_array[i])].refcount = 0;
+			}
             return (x86_64_pagetable*) -1;
         }
+		// log_printf("allocated address: %d for process %d\n", PAGENUMBER(pagetable_array[i]), pid);
         memset((void*) pagetable_array[i], 0, PAGESIZE); 
     }
     pagetable_array[0]->entry[0] = 
@@ -170,6 +185,8 @@ x86_64_pagetable* generate_new_pagetable(pid_t pid) {
         (x86_64_pageentry_t) pagetable_array[3] | PTE_W | PTE_U | PTE_P;
     pagetable_array[2]->entry[1] = 
         (x86_64_pageentry_t) pagetable_array[4] | PTE_W | PTE_U | PTE_P;
+	
+	// log_printf("successfully allocated page tables for pid: %d\n", pid);
 
     // map pages existing in kernel pagetable to process pagetable.
     vamapping vam;
@@ -194,6 +211,7 @@ int assign_physical_page(uintptr_t addr, int8_t owner) {
         || pageinfo[PAGENUMBER(addr)].refcount != 0) {
         return -1;
     } else {
+		// log_printf("Set page %d to owner %d\n", PAGENUMBER(addr), owner);
         pageinfo[PAGENUMBER(addr)].refcount = 1;
         pageinfo[PAGENUMBER(addr)].owner = owner;
         return 0;
@@ -321,6 +339,7 @@ void exception(x86_64_registers* reg) {
             uintptr_t p_addr = find_free_page(current->p_pid);
             if (p_addr == (uintptr_t) -1) {
                 log_printf("no valid physical page found to allocate: %d\n", current->p_registers.reg_rax);
+				// free_process(current->p_pid);
                 current->p_registers.reg_rax = -1;
                 break;
             }
@@ -373,9 +392,14 @@ void exception(x86_64_registers* reg) {
             current->p_registers.reg_rax = -1;
             break;
         }
+        // check if there are enough available pages to generate the new process
+        if (num_free_pages() < num_process_pages(current->p_pid) + 5) {
+            current->p_registers.reg_rax = -1;
+            break;
+        }
         processes[child_pid].p_pagetable = generate_new_pagetable(child_pid);
         if (processes[child_pid].p_pagetable == (x86_64_pagetable*) -1) {
-            // free_process(child_pid);
+			processes[child_pid].p_state = P_FREE;
             current->p_registers.reg_rax = -1;
             break;
         }
@@ -389,7 +413,7 @@ void exception(x86_64_registers* reg) {
                 if ((vam.perm & PTE_W) == PTE_W) {
                     uintptr_t page_cpy = find_free_page(child_pid);
                     if (page_cpy == (uintptr_t) -1) {
-                        // free_process(child_pid);
+                        free_process(child_pid);
                         current->p_registers.reg_rax = -1;
                         break;
                     }
@@ -403,6 +427,10 @@ void exception(x86_64_registers* reg) {
             }
         }
 
+		if ((int) current->p_registers.reg_rax == -1) {
+			break;
+		}
+
         // copy the registers, aside from rax
         // uint64_t prev_rax = processes[child_pid].p_registers.reg_rax;
         processes[child_pid].p_registers = processes[current->p_pid].p_registers;
@@ -414,7 +442,8 @@ void exception(x86_64_registers* reg) {
         break;
 
     case INT_SYS_EXIT:
-        // free_process(current->p_pid);
+		// log_printf("exited process %d\n", current->p_pid);
+        free_process(current->p_pid);
         break;
 
     default:
@@ -548,6 +577,10 @@ void check_page_table_ownership(x86_64_pagetable* pt, pid_t pid) {
 static void check_page_table_ownership_level(x86_64_pagetable* pt, int level,
                                              int owner, int refcount) {
     assert(PAGENUMBER(pt) < NPAGES);
+	// if (pageinfo[PAGENUMBER(pt)].owner != owner) {
+		// log_printf("pagetable: %d, level: %d, owner: %d, refcount: %d, actual owner: %d\n", PAGENUMBER(pt), level, owner, refcount, pageinfo[PAGENUMBER(pt)].owner);
+		// log_printf("owner status: %d\n", processes[owner].p_state);
+	// }
     assert(pageinfo[PAGENUMBER(pt)].owner == owner);
     // log_printf("refcount for page %d is %d, expected to be %d\n", PAGENUMBER(pt), pageinfo[PAGENUMBER(pt)].refcount, refcount);
     assert(pageinfo[PAGENUMBER(pt)].refcount == refcount);
@@ -592,6 +625,9 @@ void check_virtual_memory(void) {
     // Check that all referenced pages refer to active processes
     for (int pn = 0; pn < PAGENUMBER(MEMSIZE_PHYSICAL); ++pn) {
         if (pageinfo[pn].refcount > 0 && pageinfo[pn].owner >= 0) {
+            // if (processes[pageinfo[pn].owner].p_state == P_FREE) {
+                // log_printf("Process %d free while page %d exists under its ownership\n", pageinfo[pn].owner, pn);
+            // }
             assert(processes[pageinfo[pn].owner].p_state != P_FREE);
         }
     }
@@ -723,7 +759,7 @@ uintptr_t find_unassigned_page() {
 // find next available page to construct page table
 uintptr_t find_free_page(pid_t pid) {
     for (uintptr_t page_addr = 0; page_addr < MEMSIZE_PHYSICAL; page_addr += PAGESIZE) {
-        if (pageinfo[PAGENUMBER(page_addr)].owner == PO_FREE) {
+        if (pageinfo[PAGENUMBER(page_addr)].owner == PO_FREE && pageinfo[PAGENUMBER(page_addr)].refcount == 0) {
             // pageinfo[i].owner = pid;
             if (assign_physical_page(page_addr, pid) != 0) { 
                 current->p_registers.reg_rax = -1;
@@ -748,19 +784,37 @@ pid_t find_free_process() {
 }
 
 void free_process(pid_t pid) {
-    // free pages owned by process
-    for (uintptr_t page_num = 0; page_num < PAGENUMBER(MEMSIZE_VIRTUAL); page_num++) {
-        if (pageinfo[page_num].owner == pid) {
-            if (pageinfo[page_num].refcount > 1) {
-                pageinfo[page_num].refcount--;
-            }
-            else {
-                pageinfo[page_num].owner = PO_FREE;
-                pageinfo[page_num].refcount = 0;
-            }
-        }
-    }
+	for (int page_num = 0; page_num < PAGENUMBER(MEMSIZE_PHYSICAL); page_num++) {
+		if (pageinfo[page_num].owner == pid) {
+			pageinfo[page_num].refcount--;
+			if (pageinfo[page_num].refcount == 0) {
+				// log_printf("Setting page %d to free\n", page_num);
+				pageinfo[page_num].owner = PO_FREE;
+			}
+		}
+	}
 
+	// log_printf("Freed process %d\n", pid);
     processes[pid].p_state = P_FREE;
     return;
+}
+
+int num_free_pages() {
+    int num_free = 0;
+    for (int i = 0; i < PAGENUMBER(MEMSIZE_PHYSICAL); i++) {
+        if (pageinfo[i].owner == P_FREE)
+            num_free++;
+    }
+    return num_free;
+}
+
+int num_process_pages(pid_t pid) {
+    int num_used = 0;
+    vamapping vam;
+    for (uintptr_t page_addr = 0; page_addr < MEMSIZE_VIRTUAL; page_addr += PAGESIZE) {
+        vam = virtual_memory_lookup(processes[pid].p_pagetable, page_addr);
+        if (vam.pn >= 0)
+            num_used++;
+    }
+    return num_used;
 }
