@@ -89,9 +89,9 @@ static int program_load_segment(proc* p, const elf_program* ph,
 
     // allocate memory
     for (uintptr_t addr = va; addr < end_mem; addr += PAGESIZE) {
-        if (assign_physical_page(addr, p->p_pid) < 0
-            || virtual_memory_map(p->p_pagetable, addr, addr, PAGESIZE,
-                                  PTE_P | PTE_W | PTE_U) < 0) {
+        uintptr_t p_addr = find_unassigned_page();
+        if (assign_physical_page(p_addr, p->p_pid) < 0
+            || virtual_memory_map(p->p_pagetable, addr, p_addr, PAGESIZE, PTE_P | PTE_U | PTE_W) < 0) {
             console_printf(CPOS(22, 0), 0xC000, "program_load_segment(pid %d): can't assign address %p\n", p->p_pid, addr);
             return -1;
         }
@@ -103,6 +103,22 @@ static int program_load_segment(proc* p, const elf_program* ph,
     // copy data from executable image into process memory
     memcpy((uint8_t*) va, src, end_file - va);
     memset((uint8_t*) end_file, 0, end_mem - end_file);
+
+    vamapping vam;
+    if ((ph->p_flags & ELF_PFLAG_WRITE) == 0) {
+        for (uintptr_t addr = va; addr < end_mem; addr += PAGESIZE) {
+            // console_printf(CPOS(22, 0), 0xC000, "p address: %d, v address: %d, perms: %i, process: %d, start: %d\n", p_addr, addr, page_perms, p->p_pid, va);
+            // if (p_addr == (uintptr_t) -1 || virtual_memory_map(p->p_pagetable, addr, p_addr, PAGESIZE, page_perms) < 0) {
+            //     console_printf(CPOS(22, 0), 0xC000, "program_load_segment(pid %d): failed to assign new page\n", p->p_pid);
+            //     return -1;
+            // }
+            vam = virtual_memory_lookup(p->p_pagetable, addr);
+            if (virtual_memory_map(p->p_pagetable, addr, vam.pa, PAGESIZE, PTE_P | PTE_U) < 0) {
+                console_printf(CPOS(22, 0), 0xC000, "program_load_segment(pid %d): can't assign address %p\n", p->p_pid, addr);
+                return -1;
+            }
+        }
+    }
 
     // restore kernel pagetable
     set_pagetable(kernel_pagetable);

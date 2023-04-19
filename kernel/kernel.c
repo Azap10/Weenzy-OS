@@ -75,6 +75,7 @@ void memshow_virtual(x86_64_pagetable* pagetable, const char* name);
 void memshow_virtual_animate(void);
 x86_64_pagetable* generate_new_pagetable(pid_t pid);
 uintptr_t find_free_page(pid_t pid);
+uintptr_t find_unassigned_page();
 pid_t find_free_process();
 
 
@@ -172,7 +173,7 @@ x86_64_pagetable* generate_new_pagetable(pid_t pid) {
 
     // map pages existing in kernel pagetable to process pagetable.
     vamapping vam;
-    for (int addr = 0; addr < PROC_START_ADDR; addr += PAGESIZE) {
+    for (uintptr_t addr = 0; addr < PROC_START_ADDR; addr += PAGESIZE) {
         vam = virtual_memory_lookup(kernel_pagetable, addr);
         if (vam.pn >= 0) {
             virtual_memory_map(pagetable_array[0], addr, vam.pa, PAGESIZE, vam.perm);
@@ -309,7 +310,7 @@ void exception(x86_64_registers* reg) {
             current->p_registers.reg_rax = -1;
             break;
         }
-        else if (addr > MEMSIZE_VIRTUAL) {
+        else if (addr >= MEMSIZE_VIRTUAL) {
             log_printf("allocated address is out of range\n");
             current->p_registers.reg_rax = -1;
             break;
@@ -369,32 +370,51 @@ void exception(x86_64_registers* reg) {
 	case INT_SYS_FORK: 
 		pid_t child_pid = find_free_process();
         if (child_pid < 0) {
-            return;
+            current->p_registers.reg_rax = -1;
+            break;
         }
         processes[child_pid].p_pagetable = generate_new_pagetable(child_pid);
         if (processes[child_pid].p_pagetable == (x86_64_pagetable*) -1) {
-            return;
+            // free_process(child_pid);
+            current->p_registers.reg_rax = -1;
+            break;
         }
 
         // make a copy for each page in parent's page table
         vamapping vam;
         for (uintptr_t page_addr = PROC_START_ADDR; page_addr < MEMSIZE_VIRTUAL; page_addr += PAGESIZE) {
             vam = virtual_memory_lookup(current->p_pagetable, page_addr);
-            if (pageinfo[vam.pn].owner == current->p_pid) {
-                uintptr_t page_cpy = find_free_page(child_pid);
-                memcpy((void*) page_cpy, (void*) vam.pa, PAGESIZE);
-                virtual_memory_map(processes[child_pid].p_pagetable, page_addr, page_cpy, PAGESIZE, vam.perm);
+            // if (pageinfo[vam.pn].owner == current->p_pid) {
+            if ((vam.perm & (PTE_U | PTE_P)) == (PTE_U | PTE_P))  {
+                if ((vam.perm & PTE_W) == PTE_W) {
+                    uintptr_t page_cpy = find_free_page(child_pid);
+                    if (page_cpy == (uintptr_t) -1) {
+                        // free_process(child_pid);
+                        current->p_registers.reg_rax = -1;
+                        break;
+                    }
+                    memcpy((void*) page_cpy, (void*) vam.pa, PAGESIZE);
+                    virtual_memory_map(processes[child_pid].p_pagetable, page_addr, page_cpy, PAGESIZE, vam.perm);
+                }
+                else {
+                    pageinfo[vam.pn].refcount++;
+                    virtual_memory_map(processes[child_pid].p_pagetable, page_addr, vam.pa, PAGESIZE, vam.perm);
+                }
             }
         }
 
         // copy the registers, aside from rax
-        uint64_t prev_rax = processes[child_pid].p_registers.reg_rax;
+        // uint64_t prev_rax = processes[child_pid].p_registers.reg_rax;
         processes[child_pid].p_registers = processes[current->p_pid].p_registers;
-        processes[child_pid].p_registers.reg_rax = prev_rax;
+        processes[child_pid].p_registers.reg_rax = 0;
 
         processes[child_pid].p_state = P_RUNNABLE;
         processes[child_pid].display_status = 1;
         current->p_registers.reg_rax = child_pid;
+        break;
+
+    case INT_SYS_EXIT:
+        // free_process(current->p_pid);
         break;
 
     default:
@@ -691,6 +711,16 @@ void memshow_virtual_animate(void) {
 }
 
 // find next available page to construct page table
+uintptr_t find_unassigned_page() {
+    for (uintptr_t page_addr = 0; page_addr < MEMSIZE_PHYSICAL; page_addr += PAGESIZE) {
+        if (pageinfo[PAGENUMBER(page_addr)].owner == PO_FREE) {
+            return page_addr;
+        }
+    }
+    return (uintptr_t) -1;
+}
+
+// find next available page to construct page table
 uintptr_t find_free_page(pid_t pid) {
     for (uintptr_t page_addr = 0; page_addr < MEMSIZE_PHYSICAL; page_addr += PAGESIZE) {
         if (pageinfo[PAGENUMBER(page_addr)].owner == PO_FREE) {
@@ -710,9 +740,27 @@ pid_t find_free_process() {
 	for (int i = 1; i < NPROC; i++) {
 		// procstate exam
 		if (processes[i].p_state == P_FREE) {
-			return processes[i].p_pid;
+			return i;
 		}
 	}
 	current->p_registers.reg_rax = -1;
 	return -1;
+}
+
+void free_process(pid_t pid) {
+    // free pages owned by process
+    for (uintptr_t page_num = 0; page_num < PAGENUMBER(MEMSIZE_VIRTUAL); page_num++) {
+        if (pageinfo[page_num].owner == pid) {
+            if (pageinfo[page_num].refcount > 1) {
+                pageinfo[page_num].refcount--;
+            }
+            else {
+                pageinfo[page_num].owner = PO_FREE;
+                pageinfo[page_num].refcount = 0;
+            }
+        }
+    }
+
+    processes[pid].p_state = P_FREE;
+    return;
 }

@@ -12,5 +12,8 @@ Date        Time Spent      Description
 
 04/16       4 hours         Completed 4 with end of exception 13 when out of memory,
                             started to work on fork.
+04/17       2.5 hours       Completed fork, fixed exception 13. Started to work on
+                            task 6, stuck with kernel page fault.
+04/18       1 hour          Completed task 6.
 ----------------------------------------------------------------------------
-    TOTAL:  10 hours
+    TOTAL:  17.5 hours
