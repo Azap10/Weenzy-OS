@@ -78,7 +78,7 @@ uintptr_t find_free_page(pid_t pid);
 uintptr_t find_unassigned_page();
 pid_t find_free_process();
 void free_process(pid_t pid);
-int num_free_pages();
+int num_pages(pid_t pid);
 int num_process_pages(pid_t pid);
 
 
@@ -393,7 +393,7 @@ void exception(x86_64_registers* reg) {
             break;
         }
         // check if there are enough available pages to generate the new process
-        if (num_free_pages() < num_process_pages(current->p_pid) + 5) {
+        if (num_pages(P_FREE) < num_pages(current->p_pid)) {
             current->p_registers.reg_rax = -1;
             break;
         }
@@ -784,6 +784,17 @@ pid_t find_free_process() {
 }
 
 void free_process(pid_t pid) {
+    // vamapping vam;
+    // for (uintptr_t page_addr = 0; page_addr < MEMSIZE_VIRTUAL; page_addr += PAGESIZE) {
+    //     vam = virtual_memory_lookup(processes[pid].p_pagetable, page_addr);
+    //     if (vam.pn >= 0) {
+    //         pageinfo[vam.pn].refcount--;
+    //         if (pageinfo[vam.pn].refcount == 0) {
+    //             pageinfo[vam.pn].owner = PO_FREE;
+    //         }
+    //     }
+    // }
+
 	for (int page_num = 0; page_num < PAGENUMBER(MEMSIZE_PHYSICAL); page_num++) {
 		if (pageinfo[page_num].owner == pid) {
 			pageinfo[page_num].refcount--;
@@ -799,10 +810,10 @@ void free_process(pid_t pid) {
     return;
 }
 
-int num_free_pages() {
+int num_pages(pid_t pid) {
     int num_free = 0;
     for (int i = 0; i < PAGENUMBER(MEMSIZE_PHYSICAL); i++) {
-        if (pageinfo[i].owner == P_FREE)
+        if (pageinfo[i].owner == pid)
             num_free++;
     }
     return num_free;
