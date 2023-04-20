@@ -784,16 +784,16 @@ pid_t find_free_process() {
 }
 
 void free_process(pid_t pid) {
-    // vamapping vam;
-    // for (uintptr_t page_addr = 0; page_addr < MEMSIZE_VIRTUAL; page_addr += PAGESIZE) {
-    //     vam = virtual_memory_lookup(processes[pid].p_pagetable, page_addr);
-    //     if (vam.pn >= 0) {
-    //         pageinfo[vam.pn].refcount--;
-    //         if (pageinfo[vam.pn].refcount == 0) {
-    //             pageinfo[vam.pn].owner = PO_FREE;
-    //         }
-    //     }
-    // }
+    vamapping vam;
+    for (uintptr_t page_addr = PROC_START_ADDR; page_addr < MEMSIZE_VIRTUAL; page_addr += PAGESIZE) {
+        vam = virtual_memory_lookup(processes[pid].p_pagetable, page_addr);
+        if (vam.pn >= 0 && pageinfo[vam.pn].owner != pid) {
+            pageinfo[vam.pn].refcount--;
+            if (pageinfo[vam.pn].refcount == 0) {
+                pageinfo[vam.pn].owner = PO_FREE;
+            }
+        }
+    }
 
 	for (int page_num = 0; page_num < PAGENUMBER(MEMSIZE_PHYSICAL); page_num++) {
 		if (pageinfo[page_num].owner == pid) {
